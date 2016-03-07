@@ -127,7 +127,7 @@ void setup(void){
   
   Serial.print("Connecting to Network...");  
   esp.connectToNetwork(configuration.NETWORK_SSID, configuration.NETWORK_PASSWORD, 60000, NULL); // connect to the network
-  Serial.println("OK");     
+  Serial.println("OK");
 }
 
 void sampleAndbuildUrlPathString(){
@@ -277,7 +277,7 @@ void get(char * hostname, uint16_t port, char * url_path, void (*responseBodyPro
     snprintf(scratch, 2047, "GET %s HTTP/1.1\r\nHost: %s\r\n\r\n\r\n", url_path, hostname);        
     esp.print(scratch);
   } else {
-    Serial.println(F("Error: Server Connection failed"));    
+    Serial.println(F("Error: Failed to publish to datastream"));
     return;
   }
 
