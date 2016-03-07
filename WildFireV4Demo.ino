@@ -7,10 +7,11 @@
                                    // you're accessing is quick to respond, you can reduce this value.
 
 #define EDGE_TYPE_ALWAYS  (0)      // publishes periodically regardless of its value
-#define EDGE_TYPE_RISING  (1)      // publishes once whenever value crosses threshold low to high
-#define EDGE_TYPE_FALLING (2)      // publishes once whenever value crosses threshold high to low
+#define EDGE_TYPE_RISING  (1)      // publishes whenever value crosses threshold low to high
+#define EDGE_TYPE_FALLING (2)      // publishes whenever value crosses threshold high to low
 #define EDGE_TYPE_ABOVE   (3)      // publishes periodically whenever value is above threshold
 #define EDGE_TYPE_BELOW   (4)      // publishes periodically whenever value is below threshold
+#define EDGE_TYPE_BOTH    (5)      // publishes whenever value crosses threshold, either high to low, or low to high
 
 typedef struct {
   char NETWORK_SSID[32];
@@ -216,21 +217,27 @@ boolean shouldPublishData(){
     if(configuration.ANALOG_ENABLE[ii]){
       //ignore edges on first opportunity
       if(!first){        
-        // if *any* channel is set to 'enabled', and 'rising' and current > previous, and current > threshold, and previous < threshold we should publish
-        if((configuration.EDGE_TYPE[ii] == EDGE_TYPE_RISING)
-            && (configuration.CURRENT_VALUE[ii] > configuration.PREVIOUS_VALUE[ii]) 
+        // define a RISING EDGE as if *any* channel is set to 'enabled', and 'rising' and current > previous, and current > threshold, and previous < threshold
+        boolean is_rising_edge = (configuration.CURRENT_VALUE[ii] > configuration.PREVIOUS_VALUE[ii]) 
             && (configuration.CURRENT_VALUE[ii] > configuration.THRESHOLD[ii])
-            && (configuration.PREVIOUS_VALUE[ii] < configuration.THRESHOLD[ii])){
-          return true;
-        }
-  
-        // if *any* channel is set to 'enabled' and 'falling', and current < previous, and current < threshold, and previous > threshold we should publish
-        if((configuration.EDGE_TYPE[ii] == EDGE_TYPE_FALLING)
-            && (configuration.CURRENT_VALUE[ii] < configuration.PREVIOUS_VALUE[ii]) 
+            && (configuration.PREVIOUS_VALUE[ii] < configuration.THRESHOLD[ii]) ? true : false;
+
+        // define a FALLING EDGE as if *any* channel is set to 'enabled' and 'falling', and current < previous, and current < threshold, and previous > threshold
+        boolean is_falling_edge = (configuration.CURRENT_VALUE[ii] < configuration.PREVIOUS_VALUE[ii]) 
             && (configuration.CURRENT_VALUE[ii] < configuration.THRESHOLD[ii])
-            && (configuration.PREVIOUS_VALUE[ii] > configuration.THRESHOLD[ii])){
+            && (configuration.PREVIOUS_VALUE[ii] > configuration.THRESHOLD[ii]) ? true : false;
+            
+        if((configuration.EDGE_TYPE[ii] == EDGE_TYPE_RISING) && is_rising_edge){
           return true;
         }
+          
+        if((configuration.EDGE_TYPE[ii] == EDGE_TYPE_FALLING) && is_falling_edge){
+          return true;
+        }
+
+        if((configuration.EDGE_TYPE[ii] == EDGE_TYPE_BOTH) && (is_rising_edge || is_falling_edge)){
+          return true;
+        }        
       }
       else{
         first = false;
@@ -491,6 +498,7 @@ char * commands[] = {
   "always   ",
   "rising   ",
   "falling  ",
+  "both     ",
   "above    ",
   "below    ",
   "reset    ",
@@ -511,6 +519,7 @@ void (*command_functions[])(char * arg) = {
   set_always,
   set_rising,
   set_falling,
+  set_both,
   set_above,
   set_below,
   reset,
@@ -773,16 +782,20 @@ void help_menu(char * arg) {
       Serial.println(F("rising <number> <threshold>"));
       get_help_indent(); Serial.println(F("<number> is the WildFire Analog Input number 0..7"));       
       get_help_indent(); Serial.println(F("<threshold> analog to digital converter threshold value 0..1023"));       
-      get_help_indent(); Serial.println(F("Note: Publish happens once, when value crosses threshold low to high"));       
-      get_help_indent(); Serial.println(F("      and not again until value crosses threshold high to low first"));       
+      get_help_indent(); Serial.println(F("Note: Publish happens once, when value crosses threshold from below to above"));       
     }    
     else if (strncmp("falling", arg, 7) == 0){
       Serial.println(F("falling <number> <threshold>"));
       get_help_indent(); Serial.println(F("<number> is the WildFire Analog Input number 0..7"));       
       get_help_indent(); Serial.println(F("<threshold> analog to digital converter threshold value 0..1023"));       
-      get_help_indent(); Serial.println(F("Note: Publish happens once, when value crosses threshold high to low"));       
-      get_help_indent(); Serial.println(F("      and not again until value crosses threshold low to high first"));             
+      get_help_indent(); Serial.println(F("Note: Publish happens once, when value crosses threshold from above to below"));             
     }    
+    else if (strncmp("both", arg, 4) == 0){
+      Serial.println(F("both <number> <threshold>"));
+      get_help_indent(); Serial.println(F("<number> is the WildFire Analog Input number 0..7"));       
+      get_help_indent(); Serial.println(F("<threshold> analog to digital converter threshold value 0..1023"));       
+      get_help_indent(); Serial.println(F("Note: Publish happens when value crosses threshold from above to below, or from below to above"));
+    }        
     else if (strncmp("above", arg, 5) == 0){
       Serial.println(F("above <number> <threshold>"));
       get_help_indent(); Serial.println(F("<number> is the WildFire Analog Input number 0..7"));       
@@ -1068,6 +1081,15 @@ void set_falling(char * arg){
   set_edge_type(arg, falling);
 }
 
+void both(uint8_t ch, uint16_t threshold){  
+  configuration.THRESHOLD[ch] = threshold;
+  configuration.EDGE_TYPE[ch] = EDGE_TYPE_RISING;  
+}
+
+void set_both(char * arg){
+  set_edge_type(arg, both);
+}
+
 void above(uint8_t ch, uint16_t threshold){
   configuration.THRESHOLD[ch] = threshold;
   configuration.EDGE_TYPE[ch] = EDGE_TYPE_ABOVE;    
@@ -1147,6 +1169,8 @@ void printConfig(void){
           Serial.print(F("rising")); break;
         case EDGE_TYPE_FALLING:
           Serial.print(F("falling")); break;
+        case EDGE_TYPE_BOTH:
+          Serial.print(F("both")); break;  
         case EDGE_TYPE_ABOVE:
           Serial.print(F("above")); break;
         case EDGE_TYPE_BELOW:
