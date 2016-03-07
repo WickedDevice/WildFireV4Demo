@@ -6,6 +6,12 @@
                                    // received before closing the connection.  If you know the server
                                    // you're accessing is quick to respond, you can reduce this value.
 
+#define EDGE_TYPE_ALWAYS  (0)      // publishes periodically regardless of its value
+#define EDGE_TYPE_RISING  (1)      // publishes once whenever value crosses threshold low to high
+#define EDGE_TYPE_FALLING (2)      // publishes once whenever value crosses threshold high to low
+#define EDGE_TYPE_ABOVE   (3)      // publishes periodically whenever value is above threshold
+#define EDGE_TYPE_BELOW   (4)      // publishes periodically whenever value is below threshold
+
 typedef struct {
   char NETWORK_SSID[32];
   char NETWORK_PASSWORD[32];
@@ -16,6 +22,10 @@ typedef struct {
   char ANALOG_ALIAS[8][64];
   uint8_t ANALOG_ENABLE[8];
   uint32_t POST_INTERVAL_SECONDS;
+  uint16_t THRESHOLD[8];
+  uint16_t PREVIOUS_VALUE[8];
+  uint16_t CURRENT_VALUE[8];
+  uint8_t EDGE_TYPE[8];
 } configuration_t;
 configuration_t configuration;
 #define CONFIGURATION_EEPROM_BASE_ADDRESS (256)
@@ -44,12 +54,12 @@ char scratch[2048] = {0};
 void get(char * hostname, uint16_t port, char * url_path, void (*responseBodyProcessor)(uint8_t *, uint32_t));
 
 void commitConfiguration(void){
-  eeprom_write_block((const void *) &configuration, (void *) CONFIGURATION_EEPROM_BASE_ADDRESS, sizeof(configuration));
+  eeprom_write_block((const void *) &configuration, (void *) CONFIGURATION_EEPROM_BASE_ADDRESS, sizeof(configuration));  
 }
 
 void commitConfigurationPartial(uint8_t * field_ptr, uint16_t field_size_bytes){  
-  uint16_t offset_bytes = (field_ptr - ((uint8_t *) (&configuration)));
-  eeprom_write_block((const void *) field_ptr, (void *) (CONFIGURATION_EEPROM_BASE_ADDRESS + offset_bytes), field_size_bytes);
+  uint16_t offset_bytes = ((uint16_t) field_ptr) - ((uint16_t) (&configuration));
+  eeprom_write_block((const void *) field_ptr, (void *) ((uint8_t *)(CONFIGURATION_EEPROM_BASE_ADDRESS + offset_bytes)), field_size_bytes); 
 }
 
 unsigned long previousMillis = 0; // will store last time data was posted
@@ -67,7 +77,9 @@ void setup(void){
   eeprom_read_block((void *) &configuration, (const void *) CONFIGURATION_EEPROM_BASE_ADDRESS, sizeof(configuration));
   if(configuration.ANALOG_ENABLE[0] == 0xFF){ // we are dealing with virgin EEPROM
     // initialize it to all zeros
+    Serial.println("Initializing Configuration for the first time");
     reset("config");
+    eeprom_read_block((void *) &configuration, (const void *) CONFIGURATION_EEPROM_BASE_ADDRESS, sizeof(configuration));
   }
   printConfig();
   userConfigurationProcess();
@@ -124,19 +136,23 @@ void setup(void){
   // Serial.print("Set Mode to Station...");
   esp.setNetworkMode(1);
   // Serial.println("OK");   
-  
+
+  Serial.println();
   Serial.print("Connecting to Network...");  
   esp.connectToNetwork(configuration.NETWORK_SSID, configuration.NETWORK_PASSWORD, 60000, NULL); // connect to the network
   Serial.println("OK");
 }
 
-void sampleAndbuildUrlPathString(){
+void sampleAndbuildUrlPathString(){  
   uint16_t field[8] = {0};  
   uint8_t num_channels_enabled = 0;    
   memset(URL_PATH, 0, sizeof(URL_PATH));
   for(uint8_t ii = 0; ii < 8; ii++){
     if(configuration.ANALOG_ENABLE[ii]){
-      field[num_channels_enabled++] = analogRead(ii);
+      uint16_t value = analogRead(ii);
+      field[num_channels_enabled++] = value;      
+      configuration.PREVIOUS_VALUE[ii] = configuration.CURRENT_VALUE[ii];
+      configuration.CURRENT_VALUE[ii] = value;
     }
   }  
 
@@ -156,13 +172,64 @@ void sampleAndbuildUrlPathString(){
 
 void loop(void){
   unsigned long currentMillis = millis();
-
   if (currentMillis - previousMillis >= interval) {
-    // save the last time you blinked the LED
     previousMillis = currentMillis;    
     sampleAndbuildUrlPathString();
-    get(HOSTNAME, 80, URL_PATH, processResponseData);
+    if(shouldPublishData()){
+      get(HOSTNAME, 80, URL_PATH, processResponseData);
+    }
   }
+}
+
+boolean shouldPublishData(){
+  static boolean first = true;
+
+  // the following loop implicitly implements an OR type union of conditional functionality across channel configurations
+  for(uint8_t ii = 0; ii < 8; ii++){    
+    if(configuration.ANALOG_ENABLE[ii]){
+      //ignore edges on first opportunity
+      if(!first){        
+        // if *any* channel is set to 'enabled', and 'rising' and current > previous, and current > threshold, and previous < threshold we should publish
+        if((configuration.EDGE_TYPE[ii] == EDGE_TYPE_RISING)
+            && (configuration.CURRENT_VALUE[ii] > configuration.PREVIOUS_VALUE[ii]) 
+            && (configuration.CURRENT_VALUE[ii] > configuration.THRESHOLD[ii])
+            && (configuration.PREVIOUS_VALUE[ii] < configuration.THRESHOLD[ii])){
+          return true;
+        }
+  
+        // if *any* channel is set to 'enabled' and 'falling', and current < previous, and current < threshold, and previous > threshold we should publish
+        if((configuration.EDGE_TYPE[ii] == EDGE_TYPE_FALLING)
+            && (configuration.CURRENT_VALUE[ii] < configuration.PREVIOUS_VALUE[ii]) 
+            && (configuration.CURRENT_VALUE[ii] < configuration.THRESHOLD[ii])
+            && (configuration.PREVIOUS_VALUE[ii] > configuration.THRESHOLD[ii])){
+          return true;
+        }
+      }
+      else{
+        first = false;
+      }
+
+      // if *any* channel is set to 'enabled' and 'always' we should publish
+      if(configuration.EDGE_TYPE[ii] == EDGE_TYPE_ALWAYS){
+        return true;
+      }
+
+      // if *any* channel is set to 'enabled', and 'above', and current > threshold we should publish
+      if((configuration.EDGE_TYPE[ii] == EDGE_TYPE_ABOVE)          
+          && (configuration.CURRENT_VALUE[ii] > configuration.THRESHOLD[ii])){
+        return true;
+      }
+
+      // if *any* channel is set to 'enabled', and 'below', and current < threshold we should publish
+      if((configuration.EDGE_TYPE[ii] == EDGE_TYPE_BELOW)          
+          && (configuration.CURRENT_VALUE[ii] < configuration.THRESHOLD[ii])){
+        return true;
+      }
+            
+    }   
+  }
+
+  return false; // if nothing returned true we should not publish  
 }
 
 uint16_t download_body_crc16_checksum = 0;
@@ -394,6 +461,11 @@ char * commands[] = {
   "enable   ",
   "disable  ",
   "interval ",
+  "always   ",
+  "rising   ",
+  "falling  ",
+  "above    ",
+  "below    ",
   "reset    ",
   NULL
 };
@@ -409,6 +481,11 @@ void (*command_functions[])(char * arg) = {
   enable,
   disable,
   set_interval,
+  set_always,
+  set_rising,
+  set_falling,
+  set_above,
+  set_below,
   reset,
   NULL
 };
@@ -660,6 +737,37 @@ void help_menu(char * arg) {
       Serial.println(F("interval <number>"));
       get_help_indent(); Serial.println(F("<number> number of seconds between posting to data.sparkfun.com"));       
     }
+    else if (strncmp("always", arg, 6) == 0){
+      Serial.println(F("always <number>"));
+      get_help_indent(); Serial.println(F("<number> is the WildFire Analog Input number 0..7"));      
+      get_help_indent(); Serial.println(F("Note: Publishes on global interval regardless of its value"));      
+    }
+    else if (strncmp("rising", arg, 6) == 0){
+      Serial.println(F("rising <number> <threshold>"));
+      get_help_indent(); Serial.println(F("<number> is the WildFire Analog Input number 0..7"));       
+      get_help_indent(); Serial.println(F("<threshold> analog to digital converter threshold value 0..1023"));       
+      get_help_indent(); Serial.println(F("Note: Publish happens once, when value crosses threshold low to high"));       
+      get_help_indent(); Serial.println(F("      and not again until value crosses threshold high to low first"));       
+    }    
+    else if (strncmp("falling", arg, 7) == 0){
+      Serial.println(F("falling <number> <threshold>"));
+      get_help_indent(); Serial.println(F("<number> is the WildFire Analog Input number 0..7"));       
+      get_help_indent(); Serial.println(F("<threshold> analog to digital converter threshold value 0..1023"));       
+      get_help_indent(); Serial.println(F("Note: Publish happens once, when value crosses threshold high to low"));       
+      get_help_indent(); Serial.println(F("      and not again until value crosses threshold low to high first"));             
+    }    
+    else if (strncmp("above", arg, 5) == 0){
+      Serial.println(F("above <number> <threshold>"));
+      get_help_indent(); Serial.println(F("<number> is the WildFire Analog Input number 0..7"));       
+      get_help_indent(); Serial.println(F("<threshold> analog to digital converter threshold value 0..1023"));       
+      get_help_indent(); Serial.println(F("Note: Publishes on global interval as long as value is above threshold"));
+    }    
+    else if (strncmp("below", arg, 5) == 0){
+      Serial.println(F("below <number> <threshold>"));
+      get_help_indent(); Serial.println(F("<number> is the WildFire Analog Input number 0..7"));       
+      get_help_indent(); Serial.println(F("<threshold> analog to digital converter threshold value 0..1023"));       
+      get_help_indent(); Serial.println(F("Note: Publishes on global interval as long as value is below threshold"));
+    }    
     else if (strncmp("reset", arg, 5) == 0){
       Serial.println(F("reset config"));
       get_help_indent(); Serial.println(F("Clears the configuration data"));       
@@ -721,7 +829,7 @@ void set_public_key(char * arg) {
     commitConfigurationPartial(ptr, 256);
   }
   else {
-    Serial.println(F("Error: Public URL must be less than 256 characters in length"));
+    Serial.println(F("Error: Public Key must be less than 256 characters in length"));
   }    
 }
 
@@ -735,7 +843,7 @@ void set_private_key(char * arg) {
     commitConfigurationPartial(ptr, 256);
   }
   else {
-    Serial.println(F("Error: Public URL must be less than 256 characters in length"));
+    Serial.println(F("Error: Private Key must be less than 256 characters in length"));
   }    
 }
 
@@ -749,12 +857,12 @@ void set_delete_key(char * arg) {
     commitConfigurationPartial(ptr, 256);
   }
   else {
-    Serial.println(F("Error: Public URL must be less than 256 characters in length"));
+    Serial.println(F("Error: Delete key must be less than 256 characters in length"));
   }    
 }
 
 void alias(char * arg) { 
-  trim_string(arg);  
+  trim_string(arg);
   char * ch_s = strtok(arg, " ");
   char * alias_s = strtok(NULL, " ");
   char * endPtr;
@@ -787,7 +895,7 @@ void alias(char * arg) {
     commitConfigurationPartial(ptr, 1);
   }
   else {
-    Serial.println(F("Error: Public URL must be less than 256 characters in length"));
+    Serial.println(F("Error: Alias must be less than 64 characters in length"));
   }    
 }
 void enable(char * arg) { 
@@ -856,13 +964,111 @@ void set_interval(char * arg){
   }   
 }
 
+void set_always(char * arg){
+  trim_string(arg);
+  char * ch_s = strtok(arg, " ");
+  char * endPtr;
+  uint32_t ch = strtoul(ch_s, &endPtr, 10);  
+  if(endPtr == NULL){
+    Serial.print(F("Error: failed to parse channel number: "));
+    Serial.println(ch_s);
+    return;
+  }  
+  else if(ch > 7){
+    Serial.println(F("Error: channel must be in the range 0 .. 7"));    
+    return;      
+  }
+  else{
+    uint8_t * ptr = (uint8_t *) (&(configuration.EDGE_TYPE[ch]));
+    configuration.EDGE_TYPE[ch] = EDGE_TYPE_ALWAYS;
+    commitConfigurationPartial(ptr, 1);    
+  }
+}
+
+// delegate for rising, falling, above, and below input processing
+void set_edge_type(char * arg, void(*func)(uint8_t, uint16_t)){
+  trim_string(arg);
+  char * ch_s = strtok(arg, " ");
+  char * endPtr;
+  uint32_t ch = strtoul(ch_s, &endPtr, 10);
+  uint32_t threshold = 0;
+  if(endPtr == NULL){
+    Serial.print(F("Error: failed to parse channel number: "));
+    Serial.println(ch_s);
+    return;
+  }  
+  else{ 
+    ch_s = strtok(NULL, " ");
+    threshold = strtoul(ch_s, &endPtr, 10);
+    if(endPtr == NULL){
+      Serial.print(F("Error: failed to parse threshold: "));
+      Serial.println(ch_s);
+      return;
+    }
+    else if(ch > 7){
+      Serial.println(F("Error: channel must be in the range 0 .. 7"));    
+      return;      
+    }
+    else if(threshold > 1023){
+      Serial.println(F("Error: threshold must be in the range 0 .. 1023"));    
+      return;      
+    }
+    else{
+      func(ch, threshold);
+      uint8_t * ptr = (uint8_t *) (&(configuration.EDGE_TYPE[ch]));
+      commitConfigurationPartial(ptr, 1);  
+      ptr = (uint8_t *) (&(configuration.THRESHOLD[ch]));
+      commitConfigurationPartial(ptr, 2);        
+    }
+  }  
+}
+
+void rising(uint8_t ch, uint16_t threshold){  
+  configuration.THRESHOLD[ch] = threshold;
+  configuration.EDGE_TYPE[ch] = EDGE_TYPE_RISING;  
+}
+
+void set_rising(char * arg){
+  set_edge_type(arg, rising);
+}
+
+void falling(uint8_t ch, uint16_t threshold){
+  configuration.THRESHOLD[ch] = threshold;
+  configuration.EDGE_TYPE[ch] = EDGE_TYPE_FALLING;  
+}
+
+void set_falling(char * arg){
+  set_edge_type(arg, falling);
+}
+
+void above(uint8_t ch, uint16_t threshold){
+  configuration.THRESHOLD[ch] = threshold;
+  configuration.EDGE_TYPE[ch] = EDGE_TYPE_ABOVE;    
+}
+
+void set_above(char * arg){
+  set_edge_type(arg, above);
+}
+
+void below(uint8_t ch, uint16_t threshold){
+  configuration.THRESHOLD[ch] = threshold;
+  configuration.EDGE_TYPE[ch] = EDGE_TYPE_BELOW;  
+}
+
+void set_below(char * arg){
+  set_edge_type(arg, below);
+}
+
 void reset(char * arg) {
   trim_string(arg);  
   lowercase(arg);
   if (strcmp(arg, "config") == 0) {
-    memset((void *) &configuration, 0,  sizeof(configuration));
-    alias("0 analog0");    // map a0 => "analog0"
-    set_interval("10");    // 10 second interval
+    memset((void *) &configuration, 0, sizeof(configuration));
+    char * alias_cmd = "0 analog0";
+    char arg[16] = {0};
+    strcpy(arg, alias_cmd); 
+    alias(arg);    // map a0 => "analog0"
+    set_interval("10");    // 10 second interval    
     commitConfiguration();
   }
   else {
@@ -871,50 +1077,76 @@ void reset(char * arg) {
 }
   
 void printConfig(void){
-  Serial.println("Current Configuration:");
-  Serial.println("=======================");
-  Serial.println("Network Parameters");
-  Serial.println("-----------------------");
-  Serial.print("  SSID: ");
+  Serial.println(F("Current Configuration:"));
+  Serial.println(F("======================="));
+  Serial.println(F("Network Parameters"));
+  Serial.println(F("-----------------------"));
+  Serial.print(F("  SSID: "));
   Serial.println(configuration.NETWORK_SSID);
-  Serial.print("  Password: ");
+  Serial.print(F("  Password: "));
   for(uint8_t ii = 0; ii < strlen(configuration.NETWORK_PASSWORD); ii++){
-    Serial.print("*");
+    Serial.print(F("*"));
   }
   
   Serial.println();
-  Serial.println("=======================");
-  Serial.println("data.sparkfun.com Parameters:");
-  Serial.println("-----------------------");
-  Serial.print("  Public URL: ");
+  Serial.println(F("======================="));
+  Serial.println(F("data.sparkfun.com Parameters:"));
+  Serial.println(F("-----------------------"));
+  Serial.print(F("  Public URL: "));
   Serial.println(configuration.PUBLIC_URL);  
-  Serial.print("  Public Key: ");
+  Serial.print(F("  Public Key: "));
   Serial.println(configuration.PUBLIC_KEY);  
-  Serial.print("  Private Key: ");
+  Serial.print(F("  Private Key: "));
   Serial.println(configuration.PRIVATE_KEY);  
-  Serial.print("  Delete Key: ");
+  Serial.print(F("  Delete Key: "));
   Serial.println(configuration.DELETE_KEY);    
-  Serial.print("  Sampling Interval: ");
+  Serial.print(F("  Sampling Interval: "));
   Serial.print(configuration.POST_INTERVAL_SECONDS);
-  Serial.println(" seconds");
+  Serial.println(F(" seconds"));
 
   Serial.println();
-  Serial.println("=======================");
-  Serial.println("Analog Input Aliases:");
-  Serial.println("-----------------------");  
+  Serial.println(F("======================="));
+  Serial.println(F("Analog Input Aliases:"));
+  Serial.println(F("-----------------------"));  
   for(uint8_t ii = 0; ii < 8; ii++){
-    Serial.print("Analog ");
+    Serial.print(F("Analog "));
     Serial.print(ii);
-    Serial.print(" => ");
+    Serial.print(F(" => "));
     if(configuration.ANALOG_ENABLE[ii]){      
-      Serial.print("[enabled]  ");
+      Serial.print(F("[enabled]"));
+      Serial.print(F("["));
+      switch(configuration.EDGE_TYPE[ii]){
+        case EDGE_TYPE_RISING:
+          Serial.print(F("rising")); break;
+        case EDGE_TYPE_FALLING:
+          Serial.print(F("falling")); break;
+        case EDGE_TYPE_ABOVE:
+          Serial.print(F("above")); break;
+        case EDGE_TYPE_BELOW:
+          Serial.print(F("below")); break;
+        case EDGE_TYPE_ALWAYS:
+          Serial.print(F("always")); break;    
+        default:
+          Serial.print(F("unknown ")); Serial.print(configuration.EDGE_TYPE[ii], HEX);break;  
+      }
+
+      switch(configuration.EDGE_TYPE[ii]){
+        case EDGE_TYPE_ALWAYS:
+          break;
+        default:
+          Serial.print(F(" "));
+          Serial.print(configuration.THRESHOLD[ii]);
+          break;
+      }
+      
+      Serial.print(F("]  "));
     }
     else{
-      Serial.print("[disabled] ");
+      Serial.print(F("[disabled] "));
     }    
-    Serial.print("'");
+    Serial.print(F("'"));
     Serial.print(configuration.ANALOG_ALIAS[ii]);
-    Serial.print("'");    
+    Serial.print(F("'"));    
     Serial.println();
   }
 }
