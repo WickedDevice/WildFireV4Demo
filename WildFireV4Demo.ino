@@ -28,7 +28,11 @@ typedef struct {
   uint8_t EDGE_TYPE[8];
 } configuration_t;
 configuration_t configuration;
+
+uint16_t CONFIGURATION_CHECKSUM = 0;
+
 #define CONFIGURATION_EEPROM_BASE_ADDRESS (256)
+#define CONFIGURATION_CHECKSUM_ADDRESS    (4096 - 2) // last two bytes of EEPROM
 
 // the config mode state machine's return values
 #define CONFIG_MODE_NOTHING_SPECIAL  (0)
@@ -53,13 +57,24 @@ char scratch[2048] = {0};
 
 void get(char * hostname, uint16_t port, char * url_path, void (*responseBodyProcessor)(uint8_t *, uint32_t));
 
+uint16_t computeConfigCrc(){
+  uint16_t computed_crc = 0;
+  uint8_t * ptr = (uint8_t *) (&configuration);
+  for(uint16_t ii = 0; ii < sizeof(configuration); ii++){
+    computed_crc = _crc16_update(computed_crc, *ptr++);
+  }  
+  return computed_crc;
+}
+
 void commitConfiguration(void){
   eeprom_write_block((const void *) &configuration, (void *) CONFIGURATION_EEPROM_BASE_ADDRESS, sizeof(configuration));  
+  eeprom_write_word((uint16_t *) CONFIGURATION_CHECKSUM_ADDRESS, computeConfigCrc());
 }
 
 void commitConfigurationPartial(uint8_t * field_ptr, uint16_t field_size_bytes){  
   uint16_t offset_bytes = ((uint16_t) field_ptr) - ((uint16_t) (&configuration));
   eeprom_write_block((const void *) field_ptr, (void *) ((uint8_t *)(CONFIGURATION_EEPROM_BASE_ADDRESS + offset_bytes)), field_size_bytes); 
+  eeprom_write_word((uint16_t *) CONFIGURATION_CHECKSUM_ADDRESS, computeConfigCrc());
 }
 
 unsigned long previousMillis = 0; // will store last time data was posted
@@ -69,13 +84,25 @@ char HOSTNAME[256] = "";
 char URL_PATH_FORMAT_STRING[1024] = "";
 char URL_PATH[2048] = "";
 
+boolean configurationValid(){
+  uint16_t computed_crc = computeConfigCrc();
+
+  if(computed_crc == CONFIGURATION_CHECKSUM){
+    return true;
+  }
+  return false;
+}
+
+
 void setup(void){
   Serial.begin(115200);               // debug console
   Serial1.begin(115200);              // AT command interface
 
   // load the configuration, initialize if necessary
   eeprom_read_block((void *) &configuration, (const void *) CONFIGURATION_EEPROM_BASE_ADDRESS, sizeof(configuration));
-  if(configuration.ANALOG_ENABLE[0] == 0xFF){ // we are dealing with virgin EEPROM
+  CONFIGURATION_CHECKSUM = eeprom_read_word((const uint16_t *) CONFIGURATION_CHECKSUM_ADDRESS);
+    
+  if(!configurationValid()){ // we are dealing with virgin EEPROM
     // initialize it to all zeros
     Serial.println("Initializing Configuration for the first time");
     reset("config");
