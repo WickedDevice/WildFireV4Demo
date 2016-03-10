@@ -155,9 +155,6 @@ void setup(void){
     }
   }
   
-  //  Serial.print("Url Path Format String: ");
-  //  Serial.println(URL_PATH_FORMAT_STRING);
-  
   esp.setInputBuffer(input_buffer, ESP8266_INPUT_BUFFER_SIZE); // connect the input buffer up
   esp.reset();                                                 // reset the module
   
@@ -166,9 +163,70 @@ void setup(void){
   // Serial.println("OK");   
 
   Serial.println();
+  displayRSSI();
   Serial.print("Connecting to Network...");  
-  esp.connectToNetwork(configuration.NETWORK_SSID, configuration.NETWORK_PASSWORD, 60000, NULL); // connect to the network
-  Serial.println("OK");
+  if(esp.connectToNetwork(configuration.NETWORK_SSID, configuration.NETWORK_PASSWORD, 60000, NULL)){
+    Serial.println("OK.");
+  }  
+  else{
+    Serial.println("Failed.");
+  }
+}
+
+void displayRSSI(void){   
+  static ap_scan_result_t res = {0};      
+  boolean found_ssid = false;
+  uint8_t target_network_secMode = 0;   
+  uint8_t num_results_found = 0;  
+  char * ssid = &(configuration.NETWORK_SSID[0]);
+  
+  Serial.println(F("Scanning for networks..."));                
+  boolean foundSSID = esp.scanForAccessPoint(ssid, &res, &num_results_found);
+  Serial.print(F("Network Scan found "));
+  Serial.print(num_results_found);
+  Serial.println(F(" networks"));
+   
+  if(foundSSID){    
+    Serial.print(F("Found Access Point \""));
+    Serial.print(ssid);
+    Serial.print(F("\", "));     
+    int8_t rssi_dbm = res.rssi;
+    Serial.print(F("RSSI = "));
+    Serial.print(res.rssi);    
+    Serial.print(F(" dBm, "));
+    Serial.print(rssi_to_bars(rssi_dbm));
+    Serial.print(F("/5 bars"));
+  }
+  else{
+    Serial.print(F("Access Point \""));
+    Serial.print(ssid);
+    Serial.println(F("\" not found.")); 
+  }
+  Serial.println();
+}
+
+uint8_t rssi_to_bars(int8_t rssi_dbm){
+  uint8_t num_bars = 0;
+  if (rssi_dbm < -87){
+    num_bars = 0;
+  }
+  else if (rssi_dbm < -82){
+    num_bars = 1;
+  }
+  else if (rssi_dbm < -77){
+    num_bars = 2;
+  }
+  else if (rssi_dbm < -72){
+    num_bars = 3;
+  }
+  else if (rssi_dbm < -67){
+    num_bars = 4;
+  }
+  else{
+    num_bars = 5;
+  }  
+  
+  return num_bars;
 }
 
 void sampleAndbuildUrlPathString(){  
@@ -487,6 +545,7 @@ void userConfigurationProcess(void){
 char * commands[] = {
   "ssid     ",
   "pwd      ",
+  "password ",
   "puburl   ",
   "pubkey   ",
   "prikey   ",
@@ -507,6 +566,7 @@ char * commands[] = {
 
 void (*command_functions[])(char * arg) = {
   set_ssid, 
+  set_network_password,
   set_network_password,
   set_public_url,
   set_public_key,
@@ -732,8 +792,9 @@ void help_menu(char * arg) {
       Serial.println(F("ssid <string>"));
       get_help_indent(); Serial.println(F("<string> is the SSID of the network the device should connect to."));      
     }
-    else if (strncmp("pwd", arg, 3) == 0){
-      Serial.println(F("pwd <string>"));
+    else if ((strncmp("pwd", arg, 3) == 0) || (strncmp("password", arg, 8) == 0)){
+      Serial.print(arg);
+      Serial.println(F(" <string>"));
       get_help_indent(); Serial.println(F("<string> is the network password for "));
       get_help_indent(); Serial.println(F("the SSID that the device should connect to."));      
     }
