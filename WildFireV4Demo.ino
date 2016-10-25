@@ -84,6 +84,8 @@ long interval = 1000;             // interval at which to post data
 char HOSTNAME[256] = "";
 char URL_PATH_FORMAT_STRING[1024] = "";
 char URL_PATH[2048] = "";
+char HOSTPORT[10] = "80";
+uint16_t hport = 80;
 
 boolean configurationValid(){
   uint16_t computed_crc = computeConfigCrc();
@@ -102,7 +104,8 @@ void setup(void){
   // load the configuration, initialize if necessary
   eeprom_read_block((void *) &configuration, (const void *) CONFIGURATION_EEPROM_BASE_ADDRESS, sizeof(configuration));
   CONFIGURATION_CHECKSUM = eeprom_read_word((const uint16_t *) CONFIGURATION_CHECKSUM_ADDRESS);
-    
+
+ 
   if(!configurationValid()){ // we are dealing with virgin EEPROM
     // initialize it to all zeros
     Serial.println("Initializing Configuration for the first time");
@@ -117,6 +120,7 @@ void setup(void){
 
   // extract the HOSTNAME from the Public URL
   // everything between "http://" and "/"
+  // if find colon, look for different http port
   char * http_slash_slash = strstr(configuration.PUBLIC_URL, "http://");
   char * ptr = http_slash_slash + strlen("http://");
   if(http_slash_slash != NULL && strlen(ptr) > 8){        
@@ -131,9 +135,18 @@ void setup(void){
       ptr++;
     }
   }
-  //  Serial.print("Hostname: ");
-  //  Serial.println(HOSTNAME);
-
+  ptr = strstr(HOSTNAME,":");
+  if (ptr != NULL){
+    *ptr = '\0';
+    ptr++;
+    strncpy(HOSTPORT, ptr, 10);
+  }
+  Serial.print("Hostname: ");
+  Serial.println(HOSTNAME);
+  Serial.print("Hostport: ");
+  Serial.println(HOSTPORT);
+  hport = atoi(HOSTPORT);
+  
   // build the URL_PATH_FORMAT_STRING
   if(strlen(URL_PATH_FORMAT_STRING) == 1){
     // add input
@@ -262,7 +275,7 @@ void loop(void){
     previousMillis = currentMillis;    
     sampleAndbuildUrlPathString();
     if(shouldPublishData()){
-      get(HOSTNAME, 80, URL_PATH, processResponseData);
+      get(HOSTNAME, hport, URL_PATH, processResponseData);
     }
   }
 }
