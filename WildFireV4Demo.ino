@@ -2,6 +2,24 @@
 #include <util/crc16.h>
 #include <avr/eeprom.h>
 
+// Begin Software Reset Implementation
+#include <avr/wdt.h>
+#define soft_restart()        \
+do                          \
+{                           \
+    wdt_enable(WDTO_15MS);  \
+    for(;;)                 \
+    {                       \
+    }                       \
+} while(0)
+void wdt_init(void) __attribute__((naked)) __attribute__((section(".init3")));
+void wdt_init(void){
+    MCUSR = 0;
+    wdt_disable();
+    return;
+}
+// End Software Reset Implementation
+
 #define IDLE_TIMEOUT_MS  10000     // Amount of time to wait (in milliseconds) with no data 
                                    // received before closing the connection.  If you know the server
                                    // you're accessing is quick to respond, you can reduce this value.
@@ -271,6 +289,11 @@ void sampleAndbuildUrlPathString(){
 
 void loop(void){
   unsigned long currentMillis = millis();
+
+  if(!esp.connectedToNetwork()){
+    soft_restart();  
+  }
+  
   if (currentMillis - previousMillis >= interval) {
     previousMillis = currentMillis;    
     sampleAndbuildUrlPathString();
